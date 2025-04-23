@@ -82,6 +82,7 @@ The scripts train and test model with 10 fold cross validation and plot a compar
 ### Running on Digital Alliance Servers
 
 After SSH'ing into servers, preform the following
+(Bash file, CNN_setup.sh, provided to install packages)
 
 ```
 module load python/3.10
@@ -105,7 +106,7 @@ python3 height.py --summary
 
 ### Running on Docker
 
-Build image:
+Build image (requirements.txt file provides to install needed Python packages):
 ```
 docker build -t snp-gwas-predictor .
 ```
