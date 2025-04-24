@@ -133,3 +133,18 @@ alternative:
 
 docker run --rm -it -v "%cd%:/app" snp-gwas-predictor python3 height.py --summary
 ```
+
+## Current Authors
+
+* **Jake Goode** - *University of Guelph, Guelph ON, Canada*
+* **Email** - *goode@uoguelph.ca* 
+* **Email** - *jake.r.goode@outlook.com*
+
+## Previous Authors
+
+* **Yang Liu** - *University of Missouri, Columbia MO, USA*
+* **Email** - *ylmk2@mail.missouri.edu* 
+* **Email** - *yanglou1990@gmail.com*
+
+## License
+GNU v2.0
