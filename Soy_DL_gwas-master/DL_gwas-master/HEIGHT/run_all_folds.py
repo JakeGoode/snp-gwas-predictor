@@ -1,9 +1,13 @@
 import subprocess
 
+NUM_FOLDS = 10
+
+print(f"Updating data files with {NUM_FOLDS} folds.")
+
 with open("fold_pcc_log.csv", "w") as f:
     f.write("")  # Truncate the file
 
-for fold in range(1, 11):
+for fold in range(1, NUM_FOLDS + 1):
     print(f"\n🚀 Running fold {fold}...\n")
     result = subprocess.run(['python3', 'height.py', '--fold', str(fold)])
 

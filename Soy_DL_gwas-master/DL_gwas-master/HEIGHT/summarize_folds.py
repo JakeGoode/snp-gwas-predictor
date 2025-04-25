@@ -8,6 +8,8 @@ from height import readData, get_saliency, plot_average_saliency, collect_salien
 IMP_input = "IMP_height.txt"
 QA_input = "QA_height.txt"
 
+NUM_FOLDS = 10
+
 # Load data (again, just for saliency/summary)
 imp_SNP, imp_pheno, folds, snp_names = readData(IMP_input)
 
@@ -35,7 +37,7 @@ test_idx = np.where(folds == 1)[0]
 sample = indices_to_one_hot(imp_SNP[test_idx[0]], nb_classes).astype(np.float32)
 
 saliency_maps = []
-for i in range(1, 11):
+for i in range(1, NUM_FOLDS + 1):
 	model_path = f"model_IMP/model_{i}.h5"
 	model = load_model(model_path, custom_objects={"isru": isru})
 	model.compile(loss='mean_squared_error', optimizer='adam')

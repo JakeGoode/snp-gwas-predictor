@@ -1,17 +1,25 @@
 from __future__ import print_function
+import os
+os.environ["OMP_NUM_THREADS"] = "2"
+os.environ["TF_NUM_INTRAOP_THREADS"] = "2"
+os.environ["TF_NUM_INTEROP_THREADS"] = "2"
+import tensorflow as tf
+tf.config.threading.set_intra_op_parallelism_threads(2)
+tf.config.threading.set_inter_op_parallelism_threads(2)
 import numpy as np
 import random
 import pandas as pd
 from scipy import stats
-import sys, os
+import sys
 import logging
-import tensorflow as tf
 from keras import layers
 from keras import regularizers
 from keras.models import Model
 from keras.models import Sequential
 from keras.layers import *
 from keras.regularizers import l1,l2, L1L2
+from keras import backend as K
+import gc
 from sklearn.metrics.pairwise import cosine_similarity
 import keras
 import keras.utils as kutils
@@ -25,6 +33,8 @@ from sklearn import datasets, linear_model
 import itertools
 from keras.models import load_model
 import csv
+import argparse
+import subprocess
 
 import matplotlib
 matplotlib.use('Agg')
@@ -45,19 +55,57 @@ if gpus:
 
 nb_classes = 4
 
+NUM_FOLDS = 2
+
+def assign_folds_to_file(filename, output_filename=None, seed=42):
+	if output_filename is None:
+		output_filename = filename  # Overwrite original
+	
+	df = pd.read_csv(filename, sep='\t')
+	num_samples = len(df)
+
+	# Generate new fold assignments
+	np.random.seed(seed)
+	new_folds = np.tile(np.arange(1, NUM_FOLDS + 1), int(np.ceil(num_samples / NUM_FOLDS)))[:num_samples]
+	assert len(new_folds) == num_samples, "Mismatch in fold assignment length!"
+
+	df.iloc[:, 0] = new_folds  # Replace first column with new folds
+
+	# Double check before writing
+	assert len(df) == num_samples, f"Row count changed! Expected {num_samples}, got {len(df)}"
+
+	df.to_csv(output_filename, sep='\t', index=False)
+
+def sync_folds_column(source_file, target_file, output_file=None):
+	"""
+	Copy the first column (fold assignment) from source_file to target_file.
+	Optionally write the result to output_file (or overwrite target_file).
+	"""
+	if output_file is None:
+		output_file = target_file
+
+	source_df = pd.read_csv(source_file, sep='\t')
+	target_df = pd.read_csv(target_file, sep='\t')
+
+	if len(source_df) != len(target_df):
+		raise ValueError(f"Row count mismatch: {source_file} has {len(source_df)}, {target_file} has {len(target_df)}")
+
+	target_df.iloc[:, 0] = source_df.iloc[:, 0]  # Copy fold column
+	target_df.to_csv(output_file, sep='\t', index=False)
+
 def indices_to_one_hot(data,nb_classes):
 	
 	targets = np.array(data).reshape(-1)
 	
 	return np.eye(nb_classes)[targets]
 
-def predict_height_from_all_folds(snp_vector, model_dir="model_IMP", num_folds=2):
+def predict_height_from_all_folds(snp_vector, model_dir="model_IMP"):
 	one_hot = indices_to_one_hot(snp_vector, nb_classes)
 	one_hot = np.expand_dims(one_hot, axis=0).astype(np.float32)
 
 	predictions = []
 
-	for i in range(1, num_folds + 1):
+	for i in range(1, NUM_FOLDS + 1):
 		model_path = f"{model_dir}/model_{i}.h5"
 		model = load_model(model_path, custom_objects={"isru": isru})
 		model.compile(loss='mean_squared_error', optimizer='adam')
@@ -76,12 +124,13 @@ def readData(input):
 	pheno = data.iloc[:,1].apply(pd.to_numeric, errors='coerce').values
 	folds = data.iloc[:,0].apply(pd.to_numeric, errors='coerce').values
 	
-	arr = np.empty(shape=(SNP.shape[0],SNP.shape[1] , nb_classes))
+	#arr = np.empty(shape=(SNP.shape[0],SNP.shape[1] , nb_classes))
+	# arr = np.memmap('snp_encoded.dat', dtype='float32', mode='w+', shape=(SNP.shape[0], SNP.shape[1], nb_classes))
 	
-	for i in range(0,SNP.shape[0]):
-		arr[i] = indices_to_one_hot(pd.to_numeric(SNP[i],downcast='signed'), nb_classes)
+	# for i in range(0,SNP.shape[0]):
+	# 	arr[i] = indices_to_one_hot(pd.to_numeric(SNP[i],downcast='signed'), nb_classes)
 		
-	return arr, pheno, folds, snp_names
+	return SNP.astype(np.int8), pheno, folds, snp_names
 	
 def resnet(input):
 	
@@ -183,7 +232,7 @@ def export_top_k_saliency(snp_names, saliency_values, k=20, output_file="top_sal
 def collect_saliency_across_folds(imp_SNP, imp_pheno, folds):
 	all_saliencies = []
 
-	for i in range(1, 3):  # or just (1, 3) for testing with 2 folds
+	for i in range(1, NUM_FOLDS + 1):
 		print(f"Processing fold {i}...")
 
 		# Load the trained model for this fold
@@ -196,7 +245,8 @@ def collect_saliency_across_folds(imp_SNP, imp_pheno, folds):
 
 		# Compute saliency for each test sample
 		for idx in test_idx:
-			sal = get_saliency(imp_SNP[idx], model)  # shape: (num_SNPs,)
+			snp_vector = indices_to_one_hot(imp_SNP[idx], nb_classes).astype(np.float32)
+			sal = get_saliency(snp_vector, model)
 			all_saliencies.append(sal)
 
 	print("Finished collecting saliency data from all folds.")
@@ -206,48 +256,142 @@ a= 0.03  #height
 
 def isru(x):
 	return  x / (tf.math.sqrt(1 + a * tf.math.square(x)))
-	
-def model_train(test,val,train,testPheno,valPheno,trainPheno,model_save,weights_save):
-	
-	batch_size = 64 #Update from 250
-	earlystop = 5
-	epoch = 1000
-	#early_stopping = keras.callbacks.EarlyStopping(monitor='val_mean_absolute_error', patience=10, mode='min')
+
+class SNPGenerator(tf.keras.utils.Sequence):
+	def __init__(self, SNP, labels, batch_size, **kwargs):
+		super().__init__(**kwargs)
+		self.SNP = SNP
+		self.labels = labels
+		self.batch_size = batch_size
+
+	def __len__(self):
+		return int(np.ceil(len(self.SNP) / self.batch_size))
+
+	def __getitem__(self, idx):
+		batch_x = self.SNP[idx * self.batch_size:(idx + 1) * self.batch_size]
+		batch_y = self.labels[idx * self.batch_size:(idx + 1) * self.batch_size]
+		batch_encoded = np.array([indices_to_one_hot(x, nb_classes) for x in batch_x], dtype=np.float32)
+		return batch_encoded, batch_y
+
+def model_train(testSNP, valSNP, trainSNP, testPheno, valPheno, trainPheno, model_save, weights_save):
+	batch_size = 4
 	early_stopping = keras.callbacks.EarlyStopping(monitor='val_mae', patience=10, mode='min')
-	
-	model = resnet(train)
-	history = model.fit(train, trainPheno, batch_size=batch_size, epochs=epoch, validation_data=(val,valPheno),callbacks=[early_stopping],shuffle= True)
-	
+
+	model = resnet(trainSNP)
+
+	# Use generators for training and validation
+	train_gen = SNPGenerator(trainSNP, trainPheno, batch_size)
+	val_gen = SNPGenerator(valSNP, valPheno, batch_size)
+
+	history = model.fit(
+		train_gen,
+		epochs=1000,
+		validation_data=val_gen,
+		callbacks=[early_stopping],
+		shuffle=True,
+		verbose=1
+	)
+
 	model.save(model_save)
-	model.save_weights(weights_save)	
+	model.save_weights(weights_save)
+
+	# Test set: one-hot encode manually
+	test_encoded = np.array([indices_to_one_hot(x, nb_classes) for x in testSNP], dtype=np.float32)
+	pred = model.predict(test_encoded)
+	pred = pred.flatten()
+
+	corr = pearsonr(pred, testPheno)[0]
+	return history, corr
 	
-	pred = model.predict(test)
-	pred.shape = (pred.shape[0],)		
-	corr = pearsonr(pred,testPheno)[0]
+def safe_delete(*varnames):
+	for name in varnames:
+		if name in locals():
+			del locals()[name]
+		elif name in globals():
+			del globals()[name]
+
+def run_saliency_summary(IMP_input, QA_input):
+	imp_SNP, imp_pheno, folds, snp_names = readData(IMP_input)
+
+	avg_saliency = collect_saliency_across_folds(imp_SNP, imp_pheno, folds)
+	plot_average_saliency(avg_saliency)
 	
-	return history,corr	
+	# After folds are run
+	if os.path.exists("fold_pcc_log.csv"):
+		df = pd.read_csv("fold_pcc_log.csv", header=None, names=["Fold", "PCC_Imputed", "PCC_NonImputed"])
+		df = df.sort_values("Fold")
+		df.to_csv("fold_pcc_summary.csv", index=False)
+
+		print("✅ Summary CSV generated: fold_pcc_summary.csv")
+		print("📈 Average PCC (imputed):", round(df['PCC_Imputed'].mean(), 4))
+		print("📈 Average PCC (non-imputed):", round(df['PCC_NonImputed'].mean(), 4))
+	else:
+		print("❌ PCC log not found. Did folds run correctly?")
 	
-def main(IMP_input,QA_input):
-	
-	IMP_corr=[]
+	print("✅ Average saliency map and plot generated.")
+
+	# SNP saliency viewer
+	test_idx = np.where(folds == 1)[0]
+	sample = indices_to_one_hot(imp_SNP[test_idx[0]], nb_classes).astype(np.float32)
+
+	saliency_maps = []
+	for i in range(1, NUM_FOLDS + 1):
+		model_path = f"model_IMP/model_{i}.h5"
+		model = load_model(model_path, custom_objects={"isru": isru})
+		model.compile(loss='mean_squared_error', optimizer='adam')
+
+		sal = get_saliency(sample, model)
+		saliency_maps.append(sal)
+
+	avg_saliency_map = np.mean(np.stack(saliency_maps), axis=0)
+	export_top_k_saliency(snp_names, avg_saliency_map, k=20)
+
+	# Interactive SNP viewer
+	while True:
+		snp_query = input("Enter SNP name to view saliency (or type 'q' to quit): ")
+		if snp_query.lower() in ['q', 'quit', 'exit']:
+			break
+
+		try:
+			idx = snp_names.index(snp_query)
+			print(f"🔬 Average saliency for {snp_query}: {avg_saliency_map[idx]:.6f}\n")
+		except ValueError:
+			print("❌ SNP not found. Please check the name and try again.\n")
+
+def main(IMP_input, QA_input, run_fold=None):
+	IMP_corr = []
 	QA_corr = []
-	
+
+	# Load data once
 	imp_SNP, imp_pheno, folds, snp_names = readData(IMP_input)
 	QA_SNP, QA_pheno, folds, _ = readData(QA_input)
-	
 	PHENOTYPE = imp_pheno
-	#Two-fold; adjust as neccessary
-	for i in range(1, 3):
-		print(f"Starting fold {i}...")
 
-		# Assign test set (the current fold)
-		testIdx = np.where(folds == i)
+	# If a specific fold is requested, just run that one; otherwise run all
+	fold_range = [run_fold] if run_fold else range(1, NUM_FOLDS + 1)
 
-		# Assign validation set (next fold, circular shift)
-		valIdx = np.where(folds == ((i % 10) + 1))  # Circular shift to get next fold
+	for i in fold_range:
+		print(f"\n🔁 Starting fold {i}...")
 
-		# Assign training set (remaining folds)
-		trainIdx = np.intersect1d(np.where((folds != i) & (folds != ((i % 10) + 1))), np.arange(len(folds)))
+		# Identify test fold
+		testIdx = np.where(folds == i)[0]
+
+		# If NUM_FOLDS >= 3, use separate fold for validation
+		if NUM_FOLDS >= 3:
+			val_fold = (i % NUM_FOLDS) + 1
+			valIdx = np.where(folds == val_fold)[0]
+			trainIdx = np.where((folds != i) & (folds != val_fold))[0]
+		else:
+			# With 2 folds: split the other fold randomly into train/val
+			other_idx = np.where(folds != i)[0]
+			np.random.seed(42)
+			np.random.shuffle(other_idx)
+			val_size = int(0.2 * len(other_idx))
+			valIdx = other_idx[:val_size]
+			trainIdx = other_idx[val_size:]
+
+		if len(trainIdx) == 0 or len(valIdx) == 0:
+			raise ValueError(f"Fold {i}: Training or validation set is empty. Check NUM_FOLDS or data distribution.")
 
 		# Partition data
 		trainSNP, trainSNP_QA, trainPheno = imp_SNP[trainIdx], QA_SNP[trainIdx], PHENOTYPE[trainIdx]
@@ -261,7 +405,7 @@ def main(IMP_input,QA_input):
 			f'model_IMP/model_weights{i}.weights.h5'
 		)
 		IMP_corr.append(float(f'{corr:.4f}'))
-		print(f"Completed fold {i} (imputed) with PCC: {corr:.4f}")
+		print(f"✅ Fold {i} (imputed) PCC: {corr:.4f}")
 
 		# Train and evaluate on non-imputed data
 		history, corr = model_train(
@@ -270,52 +414,46 @@ def main(IMP_input,QA_input):
 			f'model_QA/model_weights{i}.weights.h5'
 		)
 		QA_corr.append(float(f'{corr:.4f}'))
-		print(f"Completed fold {i} (non-imputed) with PCC: {corr:.4f}")
+		print(f"✅ Fold {i} (non-imputed) PCC: {corr:.4f}")
 
-	avg_saliency = collect_saliency_across_folds(imp_SNP, imp_pheno, folds)
-	plot_average_saliency(avg_saliency)
+		# 🧹 Clear memory
+		from keras import backend as K
+		import gc
+		K.clear_session()
+		gc.collect()
 
-	# Print results
-	print("Average PCC (imputed) from 2-fold cross-validation:", np.mean(IMP_corr))
-	print("Average PCC (non-imputed) from 2-fold cross-validation:", np.mean(QA_corr))
+	if run_fold is not None:
+		with open("fold_pcc_log.csv", "a", newline="") as file:
+			writer = csv.writer(file)
+			writer.writerow([run_fold, IMP_corr[0], QA_corr[0]])
+			print(f"✅ Saved fold {run_fold} to fold_pcc_log.csv")
 
-	print("\nYou can now check saliency (averaged across folds) for individual SNPs.")
-
-	# Pick one sample from fold 1 to analyze
-	test_idx = np.where(folds == 1)[0]
-	sample = imp_SNP[test_idx[0]]  # shape: (num_SNPs, 4)
-
-	# Compute saliency maps from all models
-	saliency_maps = []
-	for i in range(1, 3):  # use 1 to N if more folds
-		model_path = f"model_IMP/model_{i}.h5"
-		model = load_model(model_path, custom_objects={"isru": isru})
-		model.compile(loss='mean_squared_error', optimizer='adam')
-
-		sal = get_saliency(sample, model)  # shape: (num_SNPs,)
-		saliency_maps.append(sal)
-
-	avg_saliency_map = np.mean(np.stack(saliency_maps), axis=0)
-
-	export_top_k_saliency(snp_names, avg_saliency_map, k=20)
-
-	# SNP query loop
-	while True:
-		snp_query = input("Enter SNP name to view saliency (or type 'q' to quit): ")
-		if snp_query.lower() in ['q', 'quit', 'exit']:
-			break
-
-		try:
-			idx = snp_names.index(snp_query)
-			print(f"🔬 Average saliency for {snp_query}: {avg_saliency_map[idx]:.6f}\n")
-		except ValueError:
-			print("❌ SNP not found. Please check the name and try again.\n")
+	if run_fold is None:
+		with open("fold_pcc_summary.csv", mode="w", newline="") as file:
+			writer = csv.writer(file)
+			writer.writerow(["Fold", "PCC_Imputed", "PCC_NonImputed"])
+			for i in range(NUM_FOLDS):
+				writer.writerow([i + 1, IMP_corr[i], QA_corr[i]])
 
 if __name__ == '__main__':
 	
 	#os.chdir("MOISTURE")
-	
-	IMP_input =  "IMP_height.txt"
+
+	parser = argparse.ArgumentParser()
+	parser.add_argument('--fold', type=int, default=None, help="Fold number (1–10)")
+	parser.add_argument('--summary', action='store_true', help="Run saliency summary after all folds")
+	args = parser.parse_args()
+
+	IMP_input = "IMP_height.txt"
 	QA_input = "QA_height.txt"
-	
-	main(IMP_input,QA_input)
+
+	assign_folds_to_file("IMP_height.txt")  # assign new folds
+	sync_folds_column("IMP_height.txt", "QA_height.txt")  # sync folds to QA
+
+	if args.summary:
+		run_saliency_summary(IMP_input, QA_input)
+	elif args.fold:
+		main(IMP_input, QA_input, run_fold=args.fold)
+	else:
+		print("🌀 No fold specified — running all folds via run_all_folds.py ...")
+		subprocess.run(['python3', 'run_all_folds.py'])

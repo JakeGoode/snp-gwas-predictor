@@ -79,6 +79,8 @@ The scripts train and test model with 10 fold cross validation and plot a compar
 * **polytest.txt** - *Genotype contribution using Wald test score. Run with SoyNAM R package.*
 * **saliency_value.txt** - *Genotype contribution calculated using saliency map approach.*
 
+In all three python files, change the global variable NUM_FOLDS to the folds you wish to run.
+
 ### Running on Digital Alliance Servers
 
 After SSH'ing into servers, preform the following

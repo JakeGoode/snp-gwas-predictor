@@ -55,19 +55,57 @@ if gpus:
 
 nb_classes = 4
 
+NUM_FOLDS = 10
+
+def assign_folds_to_file(filename, output_filename=None, seed=42):
+	if output_filename is None:
+		output_filename = filename  # Overwrite original
+	
+	df = pd.read_csv(filename, sep='\t')
+	num_samples = len(df)
+
+	# Generate new fold assignments
+	np.random.seed(seed)
+	new_folds = np.tile(np.arange(1, NUM_FOLDS + 1), int(np.ceil(num_samples / NUM_FOLDS)))[:num_samples]
+	assert len(new_folds) == num_samples, "Mismatch in fold assignment length!"
+
+	df.iloc[:, 0] = new_folds  # Replace first column with new folds
+
+	# Double check before writing
+	assert len(df) == num_samples, f"Row count changed! Expected {num_samples}, got {len(df)}"
+
+	df.to_csv(output_filename, sep='\t', index=False)
+
+def sync_folds_column(source_file, target_file, output_file=None):
+	"""
+	Copy the first column (fold assignment) from source_file to target_file.
+	Optionally write the result to output_file (or overwrite target_file).
+	"""
+	if output_file is None:
+		output_file = target_file
+
+	source_df = pd.read_csv(source_file, sep='\t')
+	target_df = pd.read_csv(target_file, sep='\t')
+
+	if len(source_df) != len(target_df):
+		raise ValueError(f"Row count mismatch: {source_file} has {len(source_df)}, {target_file} has {len(target_df)}")
+
+	target_df.iloc[:, 0] = source_df.iloc[:, 0]  # Copy fold column
+	target_df.to_csv(output_file, sep='\t', index=False)
+
 def indices_to_one_hot(data,nb_classes):
 	
 	targets = np.array(data).reshape(-1)
 	
 	return np.eye(nb_classes)[targets]
 
-def predict_height_from_all_folds(snp_vector, model_dir="model_IMP", num_folds=2):
+def predict_height_from_all_folds(snp_vector, model_dir="model_IMP"):
 	one_hot = indices_to_one_hot(snp_vector, nb_classes)
 	one_hot = np.expand_dims(one_hot, axis=0).astype(np.float32)
 
 	predictions = []
 
-	for i in range(1, num_folds + 1):
+	for i in range(1, NUM_FOLDS + 1):
 		model_path = f"{model_dir}/model_{i}.h5"
 		model = load_model(model_path, custom_objects={"isru": isru})
 		model.compile(loss='mean_squared_error', optimizer='adam')
@@ -194,7 +232,7 @@ def export_top_k_saliency(snp_names, saliency_values, k=20, output_file="top_sal
 def collect_saliency_across_folds(imp_SNP, imp_pheno, folds):
 	all_saliencies = []
 
-	for i in range(1, 11):  # or just (1, 3) for testing with 2 folds
+	for i in range(1, NUM_FOLDS + 1):
 		print(f"Processing fold {i}...")
 
 		# Load the trained model for this fold
@@ -297,7 +335,7 @@ def run_saliency_summary(IMP_input, QA_input):
 	sample = indices_to_one_hot(imp_SNP[test_idx[0]], nb_classes).astype(np.float32)
 
 	saliency_maps = []
-	for i in range(1, 11):
+	for i in range(1, NUM_FOLDS + 1):
 		model_path = f"model_IMP/model_{i}.h5"
 		model = load_model(model_path, custom_objects={"isru": isru})
 		model.compile(loss='mean_squared_error', optimizer='adam')
@@ -330,15 +368,30 @@ def main(IMP_input, QA_input, run_fold=None):
 	PHENOTYPE = imp_pheno
 
 	# If a specific fold is requested, just run that one; otherwise run all
-	fold_range = [run_fold] if run_fold else range(1, 11)
+	fold_range = [run_fold] if run_fold else range(1, NUM_FOLDS + 1)
 
 	for i in fold_range:
 		print(f"\n🔁 Starting fold {i}...")
 
-		# Split into test/val/train using folds
-		testIdx = np.where(folds == i)
-		valIdx = np.where(folds == ((i % 10) + 1))
-		trainIdx = np.intersect1d(np.where((folds != i) & (folds != ((i % 10) + 1))), np.arange(len(folds)))
+		# Identify test fold
+		testIdx = np.where(folds == i)[0]
+
+		# If NUM_FOLDS >= 3, use separate fold for validation
+		if NUM_FOLDS >= 3:
+			val_fold = (i % NUM_FOLDS) + 1
+			valIdx = np.where(folds == val_fold)[0]
+			trainIdx = np.where((folds != i) & (folds != val_fold))[0]
+		else:
+			# With 2 folds: split the other fold randomly into train/val
+			other_idx = np.where(folds != i)[0]
+			np.random.seed(42)
+			np.random.shuffle(other_idx)
+			val_size = int(0.2 * len(other_idx))
+			valIdx = other_idx[:val_size]
+			trainIdx = other_idx[val_size:]
+
+		if len(trainIdx) == 0 or len(valIdx) == 0:
+			raise ValueError(f"Fold {i}: Training or validation set is empty. Check NUM_FOLDS or data distribution.")
 
 		# Partition data
 		trainSNP, trainSNP_QA, trainPheno = imp_SNP[trainIdx], QA_SNP[trainIdx], PHENOTYPE[trainIdx]
@@ -363,7 +416,7 @@ def main(IMP_input, QA_input, run_fold=None):
 		QA_corr.append(float(f'{corr:.4f}'))
 		print(f"✅ Fold {i} (non-imputed) PCC: {corr:.4f}")
 
-		# 🧹 Free memory after each fold
+		# 🧹 Clear memory
 		from keras import backend as K
 		import gc
 		K.clear_session()
@@ -375,12 +428,11 @@ def main(IMP_input, QA_input, run_fold=None):
 			writer.writerow([run_fold, IMP_corr[0], QA_corr[0]])
 			print(f"✅ Saved fold {run_fold} to fold_pcc_log.csv")
 
-	# If running ALL folds, generate final saliency and summaries
 	if run_fold is None:
 		with open("fold_pcc_summary.csv", mode="w", newline="") as file:
 			writer = csv.writer(file)
 			writer.writerow(["Fold", "PCC_Imputed", "PCC_NonImputed"])
-			for i in range(10):
+			for i in range(NUM_FOLDS):
 				writer.writerow([i + 1, IMP_corr[i], QA_corr[i]])
 
 if __name__ == '__main__':
@@ -394,6 +446,9 @@ if __name__ == '__main__':
 
 	IMP_input = "IMP_height.txt"
 	QA_input = "QA_height.txt"
+
+	assign_folds_to_file("IMP_height.txt")  # assign new folds
+	sync_folds_column("IMP_height.txt", "QA_height.txt")  # sync folds to QA
 
 	if args.summary:
 		run_saliency_summary(IMP_input, QA_input)
