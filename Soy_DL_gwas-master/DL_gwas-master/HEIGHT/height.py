@@ -7,41 +7,22 @@ import tensorflow as tf
 tf.config.threading.set_intra_op_parallelism_threads(2)
 tf.config.threading.set_inter_op_parallelism_threads(2)
 import numpy as np
-import random
 import pandas as pd
-from scipy import stats
-import sys
-import logging
 from keras import layers
 from keras import regularizers
 from keras.models import Model
-from keras.models import Sequential
 from keras.layers import *
-from keras.regularizers import l1,l2, L1L2
-from keras import backend as K
-import gc
-from sklearn.metrics.pairwise import cosine_similarity
 import keras
-import keras.utils as kutils
-from keras.optimizers import SGD
-from keras.callbacks import EarlyStopping,Callback,ModelCheckpoint,ReduceLROnPlateau
 from scipy.stats import pearsonr
-from sklearn.metrics import mean_squared_error,r2_score,mean_absolute_error
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn import datasets, linear_model
-import itertools
 from keras.models import load_model
 import csv
 import argparse
 import subprocess
-
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import math as m
 import keras.backend as K
-import sklearn 
 
 os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2" #New
 tf.config.set_visible_devices([], 'GPU') #New
@@ -64,9 +45,12 @@ def assign_folds_to_file(filename, output_filename=None, seed=42):
 	df = pd.read_csv(filename, sep='\t')
 	num_samples = len(df)
 
+	fold_numbers = np.arange(1, NUM_FOLDS + 1)
+
 	# Generate new fold assignments
 	np.random.seed(seed)
-	new_folds = np.tile(np.arange(1, NUM_FOLDS + 1), int(np.ceil(num_samples / NUM_FOLDS)))[:num_samples]
+	np.random.shuffle(fold_numbers)
+	new_folds = np.tile(fold_numbers, int(np.ceil(num_samples / NUM_FOLDS)))[:num_samples]
 	assert len(new_folds) == num_samples, "Mismatch in fold assignment length!"
 
 	df.iloc[:, 0] = new_folds  # Replace first column with new folds

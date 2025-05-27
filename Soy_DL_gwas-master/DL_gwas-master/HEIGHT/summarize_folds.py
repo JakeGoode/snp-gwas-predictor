@@ -2,7 +2,6 @@ import os
 import numpy as np
 import pandas as pd
 from keras.models import load_model
-import matplotlib.pyplot as plt
 from height import readData, get_saliency, plot_average_saliency, collect_saliency_across_folds, export_top_k_saliency, isru, indices_to_one_hot, nb_classes
 
 IMP_input = "IMP_height.txt"
