@@ -1,6 +1,6 @@
 import subprocess
 
-NUM_FOLDS = 10
+NUM_FOLDS = 5
 
 print(f"Updating data files with {NUM_FOLDS} folds.")
 

@@ -7,7 +7,7 @@ from height import readData, get_saliency, plot_average_saliency, collect_salien
 IMP_input = "IMP_height.txt"
 QA_input = "QA_height.txt"
 
-NUM_FOLDS = 10
+NUM_FOLDS = 5
 
 # Load data (again, just for saliency/summary)
 imp_SNP, imp_pheno, folds, snp_names = readData(IMP_input)

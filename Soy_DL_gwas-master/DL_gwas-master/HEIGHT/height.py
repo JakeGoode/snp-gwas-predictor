@@ -1,8 +1,8 @@
 from __future__ import print_function
 import os
-os.environ["OMP_NUM_THREADS"] = "2"
-os.environ["TF_NUM_INTRAOP_THREADS"] = "2"
-os.environ["TF_NUM_INTEROP_THREADS"] = "2"
+# os.environ["OMP_NUM_THREADS"] = "2"
+# os.environ["TF_NUM_INTRAOP_THREADS"] = "2"
+# os.environ["TF_NUM_INTEROP_THREADS"] = "2"
 import tensorflow as tf
 tf.config.threading.set_intra_op_parallelism_threads(2)
 tf.config.threading.set_inter_op_parallelism_threads(2)
@@ -24,19 +24,18 @@ import matplotlib.pyplot as plt
 import math as m
 import keras.backend as K
 
-os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2" #New
-tf.config.set_visible_devices([], 'GPU') #New
-gpus = tf.config.experimental.list_physical_devices('GPU')
-if gpus:
-	for gpu in gpus:
-		tf.config.experimental.set_memory_growth(gpu, True)
+# os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2"
+# tf.config.set_visible_devices([], 'GPU')
+# gpus = tf.config.experimental.list_physical_devices('GPU')
+# if gpus:
+# 	for gpu in gpus:
+# 		tf.config.experimental.set_memory_growth(gpu, True)
 
 ##one of K encoding
 
-
 nb_classes = 4
 
-NUM_FOLDS = 10
+NUM_FOLDS = 5
 
 def assign_folds_to_file(filename, output_filename=None, seed=42):
 	if output_filename is None:
@@ -258,8 +257,8 @@ class SNPGenerator(tf.keras.utils.Sequence):
 		return batch_encoded, batch_y
 
 def model_train(testSNP, valSNP, trainSNP, testPheno, valPheno, trainPheno, model_save, weights_save):
-	batch_size = 4
-	early_stopping = keras.callbacks.EarlyStopping(monitor='val_mae', patience=10, mode='min')
+	batch_size = 256
+	early_stopping = keras.callbacks.EarlyStopping(monitor='val_mae', patience=30, mode='min')
 
 	model = resnet(trainSNP)
 
