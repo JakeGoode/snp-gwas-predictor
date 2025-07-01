@@ -257,7 +257,7 @@ class SNPGenerator(tf.keras.utils.Sequence):
 		return batch_encoded, batch_y
 
 def model_train(testSNP, valSNP, trainSNP, testPheno, valPheno, trainPheno, model_save, weights_save):
-	batch_size = 256
+	batch_size = 64
 	early_stopping = keras.callbacks.EarlyStopping(monitor='val_mae', patience=30, mode='min')
 
 	model = resnet(trainSNP)
